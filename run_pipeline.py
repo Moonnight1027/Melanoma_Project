@@ -1,33 +1,39 @@
 import subprocess
 import sys
 
-# Define the sequence of scripts to run
-scripts = [
-    "prepare_data.py",  # Step 1: Create physical dataset splits (Train/Val/Test)
-    "ext.py",           # Step 2: Extract traditional ML features
-    "train.py",         # Step 3: Train and evaluate Random Forest (ML)
-    "train_dl.py"       # Step 4: Train and evaluate ResNet18 (DL)
+# ==========================================
+# Configuration: Pipeline Execution Sequence
+# ==========================================
+PIPELINE_SCRIPTS = [
+    "prepare_data.py",  # Step 1: Image cleaning (DullRazor/FOV) & Stratified Splitting
+    "ext.py",           # Step 2: Extract 14-dim handcrafted features (ABCD rule)
+    "train.py",         # Step 3: Train XGBoost & Generate SHAP explanations
+    "train_dl.py"       # Step 4: Train ResNet18 with Dynamic Learning Rate
 ]
 
 def main():
-    print("Starting the automated dual-training pipeline...\n")
+    """
+    Automated executor for the End-to-End Melanoma Classification Pipeline.
+    Implements a fail-fast mechanism to halt execution on module errors.
+    """
+    print("\n[INFO] Starting the Automated Dual-Training Pipeline...\n")
     
-    for script in scripts:
+    for script in PIPELINE_SCRIPTS:
         print(f"{'='*50}")
-        print(f"Running {script}...")
+        print(f"[EXEC] Running {script}...")
         print(f"{'='*50}")
         
-        # Execute the script using the current Python interpreter
+        # Execute the script synchronously using the current Python environment
         result = subprocess.run([sys.executable, script])
         
-        # Stop the pipeline immediately if a script crashes
+        # Fail-fast mechanism: halt the pipeline if any module crashes
         if result.returncode != 0:
-            print(f"\n[Error] {script} failed with exit code {result.returncode}.")
-            print("Pipeline stopped.")
+            print(f"\n[ERROR] '{script}' failed with exit code {result.returncode}.")
+            print("[ERROR] Pipeline terminated unexpectedly.")
             sys.exit(result.returncode)
 
-    print("\nAll training steps for both ML and DL completed successfully!")
-    print("You can now run 'predict.py' and 'predict_dl.py' for inference testing.")
+    print("\n[SUCCESS] All pipeline stages completed successfully!")
+    print("[INFO] System is ready for inference. Use 'predict.py' or 'predict_dl.py'.\n")
 
 if __name__ == "__main__":
     main()

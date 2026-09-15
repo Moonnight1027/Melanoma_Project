@@ -4,39 +4,42 @@ import numpy as np
 from skimage.feature import graycomatrix, graycoprops
 from tqdm import tqdm
 
-# Configuration
+# System configuration
 DATASET_DIR = "./dataset"
 CATEGORIES = ["benign", "malignant"]
 SPLITS = ["train", "val", "test"]
 IMG_SIZE = 256
 
 def segment_lesion(image):
-    """Extract lesion by applying Otsu thresholding strictly on non-black valid pixels."""
+    """
+    Segment the lesion area using Otsu's thresholding.
+    Strictly ignores the pre-processed black background to avoid threshold bias.
+    """
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (15, 15), 0)
     
-    # 1. Identify valid skin region (ignore black background from pre-processing)
+    # 1. Filter out pure black background (added during prepare_data.py)
     _, valid_mask = cv2.threshold(gray, 5, 255, cv2.THRESH_BINARY)
     
-    # 2. Extract valid skin pixels
+    # 2. Extract only valid skin pixels for threshold calculation
     skin_pixels = blurred[valid_mask == 255]
     if len(skin_pixels) == 0:
         return np.zeros_like(gray)
         
-    # 3. Apply Otsu only on valid skin pixels
+    # 3. Dynamic Otsu thresholding on valid pixels only
     skin_pixels_2d = skin_pixels.reshape(-1, 1)
     thresh_val, _ = cv2.threshold(skin_pixels_2d, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
     
-    # Apply dynamic threshold to the blurred image and mask it with valid region
+    # 4. Apply threshold and mask with valid region
     _, binary_mask = cv2.threshold(blurred, thresh_val, 255, cv2.THRESH_BINARY_INV)
     lesion_mask = cv2.bitwise_and(binary_mask, valid_mask)
     
-    # 4. Morphological operations
+    # 5. Morphological smoothing (remove noise and fill holes)
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
     lesion_mask = cv2.morphologyEx(lesion_mask, cv2.MORPH_OPEN, kernel, iterations=1)
     lesion_mask = cv2.morphologyEx(lesion_mask, cv2.MORPH_CLOSE, kernel, iterations=3)
     
-    # 5. Extract largest contour
+    # 6. Keep only the largest contour (the main lesion)
     contours, _ = cv2.findContours(lesion_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     final_mask = np.zeros_like(gray)
     if contours:
@@ -46,43 +49,55 @@ def segment_lesion(image):
     return final_mask
 
 def extract_features(image):
-    """Extract HSV, GLCM, and Shape features."""
+    """
+    Extract 14 handcrafted features: 6 HSV (Color), 5 GLCM (Texture), 3 Shape.
+    """
     image = cv2.resize(image, (IMG_SIZE, IMG_SIZE))
     mask = segment_lesion(image)
     
+    # Return zero vector if no lesion is detected
     if cv2.countNonZero(mask) == 0:
         return np.zeros(14)
 
     features = []
     
-    # HSV
+    # --- Feature Set 1: Color (HSV) ---
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     h_val = hsv[:, :, 0][mask == 255]
     s_val = hsv[:, :, 1][mask == 255]
     v_val = hsv[:, :, 2][mask == 255]
-    features.extend([np.mean(h_val), np.std(h_val), np.mean(s_val), np.std(s_val), np.mean(v_val), np.std(v_val)])
+    features.extend([
+        np.mean(h_val), np.std(h_val),
+        np.mean(s_val), np.std(s_val),
+        np.mean(v_val), np.std(v_val)
+    ])
     
-    # GLCM
+    # --- Feature Set 2: Texture (GLCM) ---
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     roi_gray = cv2.bitwise_and(gray, gray, mask=mask)
     glcm = graycomatrix(roi_gray, distances=[1], angles=[0], levels=256, symmetric=True, normed=True)
     features.extend([
-        graycoprops(glcm, 'contrast')[0, 0], graycoprops(glcm, 'dissimilarity')[0, 0],
-        graycoprops(glcm, 'homogeneity')[0, 0], graycoprops(glcm, 'energy')[0, 0], graycoprops(glcm, 'correlation')[0, 0]
+        graycoprops(glcm, 'contrast')[0, 0], 
+        graycoprops(glcm, 'dissimilarity')[0, 0],
+        graycoprops(glcm, 'homogeneity')[0, 0], 
+        graycoprops(glcm, 'energy')[0, 0], 
+        graycoprops(glcm, 'correlation')[0, 0]
     ])
 
-    # Shape
+    # --- Feature Set 3: Shape ---
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if contours:
         c = max(contours, key=cv2.contourArea)
         area = cv2.contourArea(c)
         x, y, w, h = cv2.boundingRect(c)
+        
         aspect_ratio = float(w) / h if h != 0 else 0
-        rect_area = w * h
-        extent = float(area) / rect_area if rect_area != 0 else 0
+        extent = float(area) / (w * h) if (w * h) != 0 else 0
+        
         hull = cv2.convexHull(c)
         hull_area = cv2.contourArea(hull)
         solidity = float(area) / hull_area if hull_area != 0 else 0
+        
         features.extend([aspect_ratio, extent, solidity])
     else:
         features.extend([0, 0, 0])
@@ -90,11 +105,13 @@ def extract_features(image):
     return np.array(features)
 
 def main():
+    """
+    Process dataset iteratively and generate feature matrices (.npy).
+    """
     os.makedirs("./data", exist_ok=True)
     
-    # Process each physical split separately
     for split in SPLITS:
-        print(f"\nExtracting features for [{split}] set...")
+        print(f"\n[INFO] Extracting features for '{split}' set...")
         X, y = [], []
         split_dir = os.path.join(DATASET_DIR, split)
         
@@ -104,19 +121,20 @@ def main():
                 continue
                 
             image_files = [f for f in os.listdir(category_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
-            print(f" -> Category [{category}] ({len(image_files)} images)")
             
-            for file_name in tqdm(image_files):
-                img = cv2.imread(os.path.join(category_dir, file_name))
+            for file_name in tqdm(image_files, desc=f"Processing {category}"):
+                img_path = os.path.join(category_dir, file_name)
+                img = cv2.imread(img_path)
+                
                 if img is not None:
                     X.append(extract_features(img))
                     y.append(label_idx)
 
-        # Save separately for train/val/test
+        # Save extracted features as NumPy arrays
         np.save(f'./data/X_{split}.npy', np.array(X))
         np.save(f'./data/y_{split}.npy', np.array(y))
         
-    print("\nAll features extracted and saved successfully.")
+    print("\n[SUCCESS] Feature extraction completed.")
     
 if __name__ == "__main__":
     main()
