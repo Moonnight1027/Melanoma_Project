@@ -19,7 +19,7 @@ Melanoma_Project/
 ├── model/                    # melanoma_model.pkl, feature_scaler.pkl, resnet18_melanoma.pth
 ├── result/                   # Confusion matrix, ROC curves, SHAP summary (prediction figures are also written here)
 ├── test/                     # Raw images from the test split for predict.py / predict_dl.py
-├── sample_images/            # Images used by test_preprocess.py
+├── sample_images/            # Example images for visualize_preprocess.py
 │
 ├── prepare_data.py           # 1:1 under-sampling, FOV masking, DullRazor, patient-grouped 70/15/15 split
 ├── ext.py                    # Lesion segmentation + 14-dim feature extraction
@@ -28,7 +28,7 @@ Melanoma_Project/
 ├── train_dl.py               # ResNet18 training + ROC
 ├── predict_dl.py             # Single image inference with ResNet18
 ├── run_pipeline.py           # Runs prepare_data -> ext -> train -> train_dl
-├── test_preprocess.py        # Before/after preprocessing figure for sample_images/
+├── visualize_preprocess.py   # Before/after preprocessing figure for sample_images/
 ├── requirements.txt
 │
 ├── train.csv                 # Original Kaggle labels
@@ -62,6 +62,11 @@ The original dataset has 33,126 images and is about 98% benign. `prepare_data.py
 
 ```bash
 python prepare_data.py
+```
+
+To see what the cleaning does, `visualize_preprocess.py` puts every image in `./sample_images/` next to its preprocessed version and saves the figure as `./result/preprocessing_demo.png`. It uses the same functions as `prepare_data.py` and does not need the Kaggle images.
+```bash
+python visualize_preprocess.py
 ```
 
 ### Step 2: Traditional ML Pipeline

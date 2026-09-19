@@ -50,7 +50,7 @@ def main():
 
     plt.tight_layout()
     os.makedirs(RESULT_DIR, exist_ok=True)
-    save_path = os.path.join(RESULT_DIR, "preprocessing_demo_v2.png")
+    save_path = os.path.join(RESULT_DIR, "preprocessing_demo.png")
     plt.savefig(save_path, dpi=150) # Increased DPI for sharper presentation
     print(f"[SUCCESS] Visualization saved to '{save_path}'")
 
