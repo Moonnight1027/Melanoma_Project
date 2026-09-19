@@ -1,129 +1,97 @@
 import os
 import shutil
+
 import cv2
 import numpy as np
 import pandas as pd
-from sklearn.utils import resample
 from sklearn.model_selection import StratifiedGroupKFold
+from sklearn.utils import resample
 from tqdm import tqdm
 
-# System configuration
 CSV_PATH = "./train.csv"
 IMG_SOURCE_DIR = "./train/"
 DATASET_DIR = "./dataset"
-# 20 patient-grouped folds: 3 for test (15%), 3 for val (15%), 14 for train (70%)
+IMG_SIZE = 256
+CATEGORIES = {0: "benign", 1: "malignant"}
+
+# 20 patient-grouped folds: 3 for test, 3 for val, 14 for train (~15/15/70%)
 N_FOLDS = 20
 TEST_FOLDS = [0, 1, 2]
 VAL_FOLDS = [3, 4, 5]
 
+
 def mask_circular_fov(image):
-    """
-    Mask bright/white background corners (often artifacts of dermoscopes) to pure black.
-    This prevents CNNs from learning 'white corners' as a shortcut feature.
-    """
+    """Black out the bright area outside the dermoscope's circular field of view."""
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    
-    # Isolate very bright pixels (> 240) which usually represent the background
-    _, thresh = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY_INV)
-    
-    # Morphological close to bridge small gaps in the mask
+    _, skin = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY_INV)
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
-    thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
-    
-    # Find the largest continuous non-white region (the actual skin FOV)
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if contours:
-        c = max(contours, key=cv2.contourArea)
-        
-        # Create a black mask and fill the skin area with white (255)
-        mask = np.zeros_like(gray)
-        cv2.drawContours(mask, [c], -1, 255, thickness=cv2.FILLED)
-        
-        # Apply the mask: retain skin pixels, turn everything else to absolute black (0)
-        return cv2.bitwise_and(image, image, mask=mask)
-    return image
+    skin = cv2.morphologyEx(skin, cv2.MORPH_CLOSE, kernel)
+
+    # The field of view is the largest non-white region
+    contours, _ = cv2.findContours(skin, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return image
+    mask = np.zeros_like(gray)
+    cv2.drawContours(mask, [max(contours, key=cv2.contourArea)], -1, 255, thickness=cv2.FILLED)
+    return cv2.bitwise_and(image, image, mask=mask)
+
 
 def remove_hair_dullrazor(image):
-    """
-    Apply DullRazor algorithm to detect and inpaint hair artifacts.
-    Crucial for accurate GLCM texture extraction in downstream tasks.
-    """
+    """DullRazor: find thin dark hairs with a black-hat filter and inpaint them."""
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    
-    # 1. Black-Hat transform: Highlights dark, thin, linear structures (hairs) against a lighter background
     kernel = cv2.getStructuringElement(cv2.MORPH_CROSS, (17, 17))
     blackhat = cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, kernel)
-    
-    # 2. Thresholding: Create a binary mask of the detected hairs
     _, hair_mask = cv2.threshold(blackhat, 15, 255, cv2.THRESH_BINARY)
-    
-    # 3. Inpainting: Telea algorithm fills the hair pixels using the colors of surrounding healthy skin
-    inpainted_img = cv2.inpaint(image, hair_mask, inpaintRadius=3, flags=cv2.INPAINT_TELEA)
-    return inpainted_img
+    return cv2.inpaint(image, hair_mask, inpaintRadius=3, flags=cv2.INPAINT_TELEA)
+
 
 def advanced_preprocess(image):
-    """Execute the full pre-processing pipeline."""
-    masked = mask_circular_fov(image)
-    cleaned = remove_hair_dullrazor(masked)
-    # Standardize output resolution to 256x256
-    return cv2.resize(cleaned, (256, 256))
+    """Preprocessing shared by training and inference."""
+    cleaned = remove_hair_dullrazor(mask_circular_fov(image))
+    return cv2.resize(cleaned, (IMG_SIZE, IMG_SIZE))
+
+
+def split_by_patient(df):
+    """Split into train/val/test so that each patient appears in only one split."""
+    df = df.reset_index(drop=True)
+    sgkf = StratifiedGroupKFold(n_splits=N_FOLDS, shuffle=True, random_state=42)
+    fold = np.empty(len(df), dtype=int)
+    for k, (_, idx) in enumerate(sgkf.split(df, df["target"], groups=df["patient_id"])):
+        fold[idx] = k
+    test = np.isin(fold, TEST_FOLDS)
+    val = np.isin(fold, VAL_FOLDS)
+    return {"train": df[~test & ~val], "val": df[val], "test": df[test]}
+
 
 def main():
-    print("[INFO] Loading dataset index (train.csv)...")
     df = pd.read_csv(CSV_PATH)
-    
-    # --- 1. Address Class Imbalance (Under-sampling) ---
-    df_benign = df[df.target == 0]
-    df_malignant = df[df.target == 1]
-    
-    print(f"[INFO] Original distribution - Benign: {len(df_benign)}, Malignant: {len(df_malignant)}")
-    
-    # Randomly under-sample benign images to match the exact number of malignant cases (1:1 ratio)
-    df_benign_down = resample(df_benign, replace=False, n_samples=len(df_malignant), random_state=42)
-    df_balanced = pd.concat([df_benign_down, df_malignant])
-    print(f"[INFO] Balanced dataset size: {len(df_balanced)} images.")
-    
-    # --- 2. Physical Data Splitting (Stratified 70/15/15, grouped by patient) ---
-    # A patient's lesions share skin tone and imaging conditions, so all images of
-    # one patient must stay in the same split to avoid leakage into val/test.
-    df_balanced = df_balanced.reset_index(drop=True)
-    sgkf = StratifiedGroupKFold(n_splits=N_FOLDS, shuffle=True, random_state=42)
-    fold = np.empty(len(df_balanced), dtype=int)
-    for k, (_, idx) in enumerate(sgkf.split(df_balanced, df_balanced['target'], groups=df_balanced['patient_id'])):
-        fold[idx] = k
-    df_test = df_balanced[np.isin(fold, TEST_FOLDS)]
-    df_val = df_balanced[np.isin(fold, VAL_FOLDS)]
-    df_train = df_balanced[~np.isin(fold, TEST_FOLDS + VAL_FOLDS)]
+    benign = df[df.target == 0]
+    malignant = df[df.target == 1]
+    print(f"Original: {len(benign)} benign, {len(malignant)} malignant")
 
-    splits = {'train': df_train, 'val': df_val, 'test': df_test}
-    categories = {0: "benign", 1: "malignant"}
-    
-    # --- 3. Execute Pre-processing and Disk I/O ---
-    # Start from an empty dataset/ so images from a previous split cannot linger
+    # Under-sample benign images to a 1:1 ratio
+    benign = resample(benign, replace=False, n_samples=len(malignant), random_state=42)
+    splits = split_by_patient(pd.concat([benign, malignant]))
+
+    # Rebuild from scratch so images from an earlier split cannot remain
     if os.path.exists(DATASET_DIR):
         shutil.rmtree(DATASET_DIR)
 
     for split_name, df_split in splits.items():
-        print(f"\n[INFO] Generating '{split_name}' set ({len(df_split)} images)...")
-        
-        # Ensure directory structure exists
-        for cat in categories.values():
+        print(f"\n{split_name}: {len(df_split)} images")
+        for cat in CATEGORIES.values():
             os.makedirs(os.path.join(DATASET_DIR, split_name, cat), exist_ok=True)
-            
-        for _, row in tqdm(df_split.iterrows(), total=len(df_split)):
-            img_name = row['image_name'] + ".jpg"
-            target_label = categories[row['target']]
-            
-            src_path = os.path.join(IMG_SOURCE_DIR, img_name)
-            dst_path = os.path.join(DATASET_DIR, split_name, target_label, img_name)
-            
-            if os.path.exists(src_path):
-                img = cv2.imread(src_path)
-                if img is not None:
-                    processed_img = advanced_preprocess(img)
-                    cv2.imwrite(dst_path, processed_img)
 
-    print("\n[SUCCESS] Data preparation (FOV Masking + DullRazor) completed.")
+        for _, row in tqdm(df_split.iterrows(), total=len(df_split)):
+            img_name = row["image_name"] + ".jpg"
+            img = cv2.imread(os.path.join(IMG_SOURCE_DIR, img_name))
+            if img is None:
+                continue
+            dst = os.path.join(DATASET_DIR, split_name, CATEGORIES[row["target"]], img_name)
+            cv2.imwrite(dst, advanced_preprocess(img))
+
+    print("\nDone.")
+
 
 if __name__ == "__main__":
     main()

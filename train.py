@@ -1,150 +1,127 @@
 import os
+
 import joblib
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import GridSearchCV, StratifiedGroupKFold
-from sklearn.metrics import roc_auc_score, accuracy_score, confusion_matrix, classification_report, roc_curve, auc
-import xgboost as xgb
 import shap
+import xgboost as xgb
+from sklearn.metrics import accuracy_score, auc, classification_report, confusion_matrix, roc_auc_score, roc_curve
+from sklearn.model_selection import GridSearchCV, StratifiedGroupKFold
+from sklearn.preprocessing import StandardScaler
 
-# ==========================================
-# 1. System Configuration & Plot Formatting
-# ==========================================
-plt.rcParams['font.sans-serif'] = ['Microsoft JhengHei'] 
-plt.rcParams['axes.unicode_minus'] = False
+# Microsoft JhengHei renders the Chinese class names in the plots
+plt.rcParams["font.sans-serif"] = ["Microsoft JhengHei"]
+plt.rcParams["axes.unicode_minus"] = False
 
+DATA_DIR = "./data"
+RESULT_DIR = "./result"
+MODEL_DIR = "./model"
 CATEGORIES = ["Benign (良性)", "Malignant (惡性)"]
-# Explicitly name the 14 features extracted in ext.py for SHAP visualization
+# Same order as the feature vector built in ext.py
 FEATURE_NAMES = [
     "Color: HSV_H_Mean", "Color: HSV_H_Std", "Color: HSV_S_Mean", "Color: HSV_S_Std", "Color: HSV_V_Mean", "Color: HSV_V_Std",
     "Texture: GLCM_Contrast", "Texture: GLCM_Dissimilarity", "Texture: GLCM_Homogeneity", "Texture: GLCM_Energy", "Texture: GLCM_Correlation",
-    "Shape: Aspect_Ratio", "Shape: Extent", "Shape: Solidity"
+    "Shape: Aspect_Ratio", "Shape: Extent", "Shape: Solidity",
 ]
+PARAM_GRID = {
+    "n_estimators": [100, 200, 300],
+    "max_depth": [3, 5, 7],
+    "learning_rate": [0.01, 0.05, 0.1],
+}
+
+
+def load_split(split):
+    X = np.load(os.path.join(DATA_DIR, f"X_{split}.npy"))
+    y = np.load(os.path.join(DATA_DIR, f"y_{split}.npy"))
+    ids = np.load(os.path.join(DATA_DIR, f"ids_{split}.npy"))
+    return X, y, ids
+
 
 def auc_scorer(estimator, X, y):
     """ROC AUC from predict_proba (scoring='roc_auc' does not recognize older XGBoost as a classifier)."""
     return roc_auc_score(y, estimator.predict_proba(X)[:, 1])
 
-def main():
-    print("\n[INFO] Initializing Machine Learning Pipeline (XGBoost + SHAP)...")
-    
-    # ==========================================
-    # 2. Data Loading & Standardization
-    # ==========================================
-    print("[INFO] Loading physical splits from NumPy arrays...")
-    X_train, y_train = np.load('./data/X_train.npy'), np.load('./data/y_train.npy')
-    X_val, y_val = np.load('./data/X_val.npy'), np.load('./data/y_val.npy')
-    X_test, y_test = np.load('./data/X_test.npy'), np.load('./data/y_test.npy')
-    
-    print(f"       -> Distribution: Train={len(y_train)}, Val={len(y_val)}, Test={len(y_test)}")
 
-    # XGBoost is tuned with cross-validation, so the separate val split (used by the
-    # CNN for checkpointing) is merged into the training data here.
+def save_confusion_matrix(y_true, y_pred, acc):
+    plt.figure(figsize=(8, 6))
+    sns.heatmap(confusion_matrix(y_true, y_pred), annot=True, fmt="d", cmap="Blues",
+                xticklabels=CATEGORIES, yticklabels=CATEGORIES)
+    plt.title(f"XGBoost Confusion Matrix (Accuracy: {acc * 100:.2f}%)")
+    plt.ylabel("True Label")
+    plt.xlabel("Predicted Label")
+    plt.tight_layout()
+    plt.savefig(os.path.join(RESULT_DIR, "benchmark_xgb_matrix.png"))
+
+
+def save_roc_curve(fpr, tpr, roc_auc):
+    plt.figure(figsize=(8, 6))
+    plt.plot(fpr, tpr, color="darkorange", lw=2, label=f"ROC curve (AUC = {roc_auc:.3f})")
+    plt.plot([0, 1], [0, 1], color="navy", lw=2, linestyle="--")
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.05])
+    plt.xlabel("False Positive Rate")
+    plt.ylabel("True Positive Rate")
+    plt.title("Receiver Operating Characteristic (XGBoost)")
+    plt.legend(loc="lower right")
+    plt.grid(alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(RESULT_DIR, "benchmark_xgb_roc.png"))
+
+
+def save_shap_summary(model, X):
+    shap_values = shap.TreeExplainer(model).shap_values(X)
+    plt.figure(figsize=(12, 8))
+    shap.summary_plot(shap_values, X, feature_names=FEATURE_NAMES, show=False)
+    plt.title("SHAP Value Summary (Impact of Features on Model Output)")
+    plt.tight_layout()
+    plt.savefig(os.path.join(RESULT_DIR, "shap_summary.png"))
+
+
+def main():
+    X_train, y_train, ids_train = load_split("train")
+    X_val, y_val, ids_val = load_split("val")
+    X_test, y_test, _ = load_split("test")
+    print(f"Train={len(y_train)}, Val={len(y_val)}, Test={len(y_test)}")
+
+    # Hyperparameters are chosen by cross-validation, so val is merged into the training data
     X_fit = np.concatenate([X_train, X_val])
     y_fit = np.concatenate([y_train, y_val])
-    ids_fit = np.concatenate([np.load('./data/ids_train.npy'), np.load('./data/ids_val.npy')])
-    patient_of = pd.read_csv('./train.csv', usecols=['image_name', 'patient_id']).set_index('image_name')['patient_id']
-    groups_fit = patient_of.loc[ids_fit].to_numpy()
+    patient_of = pd.read_csv("./train.csv", usecols=["image_name", "patient_id"]).set_index("image_name")["patient_id"]
+    groups = patient_of.loc[np.concatenate([ids_train, ids_val])].to_numpy()
 
-    # Standardize features (mean=0, variance=1)
-    # Crucial for models to treat all features (e.g., Hue vs Area) on an equal scale
     scaler = StandardScaler()
     X_fit_scaled = scaler.fit_transform(X_fit)
     X_test_scaled = scaler.transform(X_test)
 
-    # ==========================================
-    # 3. Model Training & Hyperparameter Tuning
-    # ==========================================
-    print("\n[INFO] Starting GridSearchCV for XGBoost Hyperparameter Optimization...")
-    # Define the search space
-    param_grid = {
-        'n_estimators': [100, 200, 300],
-        'max_depth': [3, 5, 7],
-        'learning_rate': [0.01, 0.05, 0.1]
-    }
-    
-    # Initialize base XGBoost classifier
-    base_xgb = xgb.XGBClassifier(eval_metric='logloss', random_state=42)
-    
-    # 5-Fold Cross Validation, grouped by patient so no patient is in both the fit and score folds
+    # Folds are grouped by patient, like the train/val/test split
     cv = StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=42)
-    grid_search = GridSearchCV(estimator=base_xgb, param_grid=param_grid, cv=cv, scoring=auc_scorer, error_score='raise', n_jobs=-1, verbose=1)
-    grid_search.fit(X_fit_scaled, y_fit, groups=groups_fit)
-    
-    best_xgb = grid_search.best_estimator_
-    print(f"[SUCCESS] Best Parameters Found: {grid_search.best_params_} (CV AUC {grid_search.best_score_:.4f})")
+    grid_search = GridSearchCV(xgb.XGBClassifier(eval_metric="logloss", random_state=42), PARAM_GRID,
+                               cv=cv, scoring=auc_scorer, error_score="raise", n_jobs=-1, verbose=1)
+    grid_search.fit(X_fit_scaled, y_fit, groups=groups)
+    model = grid_search.best_estimator_
+    print(f"Best parameters: {grid_search.best_params_} (CV AUC {grid_search.best_score_:.4f})")
 
-    # ==========================================
-    # 4. Final Evaluation (Test Set Metrics)
-    # ==========================================
-    print("\n[INFO] Executing final benchmark on unseen Test Set...")
-    y_test_pred = best_xgb.predict(X_test_scaled)
-    test_acc = accuracy_score(y_test, y_test_pred)
-    
-    print(f"\n[RESULT] XGBoost Test Accuracy: {test_acc * 100:.2f}%")
-    print(classification_report(y_test, y_test_pred, target_names=CATEGORIES))
-
-    # Calculate probabilities for ROC curve (Index 1 is the probability of Malignant)
-    y_test_proba = best_xgb.predict_proba(X_test_scaled)[:, 1]
-    fpr, tpr, _ = roc_curve(y_test, y_test_proba)
+    y_pred = model.predict(X_test_scaled)
+    acc = accuracy_score(y_test, y_pred)
+    fpr, tpr, _ = roc_curve(y_test, model.predict_proba(X_test_scaled)[:, 1])
     roc_auc = auc(fpr, tpr)
-    print(f"[RESULT] XGBoost AUC Score: {roc_auc:.4f}")
+    print(f"\nTest accuracy: {acc * 100:.2f}%")
+    print(classification_report(y_test, y_pred, target_names=CATEGORIES))
+    print(f"Test AUC: {roc_auc:.4f}")
 
-    # ==========================================
-    # 5. Visualization Generation
-    # ==========================================
-    os.makedirs("./result", exist_ok=True)
-    print("\n[INFO] Generating analytical plots...")
+    os.makedirs(RESULT_DIR, exist_ok=True)
+    save_confusion_matrix(y_test, y_pred, acc)
+    save_roc_curve(fpr, tpr, roc_auc)
+    save_shap_summary(model, X_test_scaled)
 
-    # Plot 1: Confusion Matrix
-    cm = confusion_matrix(y_test, y_test_pred)
-    plt.figure(figsize=(8, 6))
-    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=CATEGORIES, yticklabels=CATEGORIES)
-    plt.title(f'XGBoost Confusion Matrix (Accuracy: {test_acc*100:.2f}%)')
-    plt.ylabel('True Label')
-    plt.xlabel('Predicted Label')
-    plt.tight_layout()
-    plt.savefig('./result/benchmark_xgb_matrix.png')
-    print("       -> Saved: Confusion Matrix")
+    # The scaler is needed at inference time as well
+    os.makedirs(MODEL_DIR, exist_ok=True)
+    joblib.dump(model, os.path.join(MODEL_DIR, "melanoma_model.pkl"))
+    joblib.dump(scaler, os.path.join(MODEL_DIR, "feature_scaler.pkl"))
+    print(f"Saved model and scaler to {MODEL_DIR}")
 
-    # Plot 2: ROC Curve
-    plt.figure(figsize=(8, 6))
-    plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.3f})')
-    plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
-    plt.xlim([0.0, 1.0])
-    plt.ylim([0.0, 1.05])
-    plt.xlabel('False Positive Rate')
-    plt.ylabel('True Positive Rate')
-    plt.title('Receiver Operating Characteristic (XGBoost)')
-    plt.legend(loc="lower right")
-    plt.grid(alpha=0.3)
-    plt.tight_layout()
-    plt.savefig('./result/benchmark_xgb_roc.png')
-    print("       -> Saved: ROC Curve")
-    
-    # Plot 3: SHAP Feature Importance (Explainable AI)
-    print("\n[INFO] Running SHAP TreeExplainer for feature impact analysis...")
-    explainer = shap.TreeExplainer(best_xgb)
-    shap_values = explainer.shap_values(X_test_scaled)
-    
-    plt.figure(figsize=(12, 8)) # Slightly wider for the new feature names
-    shap.summary_plot(shap_values, X_test_scaled, feature_names=FEATURE_NAMES, show=False)
-    plt.title('SHAP Value Summary (Impact of Features on Model Output)')
-    plt.tight_layout()
-    plt.savefig('./result/shap_summary.png')
-    print("       -> Saved: SHAP Summary Plot")
-
-    # ==========================================
-    # 6. Model Persistence
-    # ==========================================
-    os.makedirs("./model", exist_ok=True)
-    joblib.dump(best_xgb, './model/melanoma_model.pkl')
-    # The scaler must be saved so the inference engine can standardize new images correctly
-    joblib.dump(scaler, './model/feature_scaler.pkl')
-    print("\n[SUCCESS] Pipeline Complete. Model and Scaler persisted to disk.")
 
 if __name__ == "__main__":
     main()

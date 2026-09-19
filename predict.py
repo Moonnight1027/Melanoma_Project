@@ -1,82 +1,73 @@
 import os
+
 import cv2
 import joblib
 import matplotlib.pyplot as plt
 
-# Reuse the exact training-time preprocessing and feature extraction
+# Same preprocessing and features as training
+from ext import IMG_SIZE, extract_features, segment_lesion
 from prepare_data import advanced_preprocess
-from ext import extract_features, segment_lesion, IMG_SIZE
 
-# Configure matplotlib for Chinese display
-plt.rcParams['font.sans-serif'] = ['Microsoft JhengHei'] 
-plt.rcParams['axes.unicode_minus'] = False
+plt.rcParams["font.sans-serif"] = ["Microsoft JhengHei"]
+plt.rcParams["axes.unicode_minus"] = False
 
+TEST_DIR = "./test"
+RESULT_DIR = "./result"
+MODEL_PATH = "./model/melanoma_model.pkl"
+SCALER_PATH = "./model/feature_scaler.pkl"
 CATEGORIES = ["Benign (良性)", "Malignant (惡性)"]
+IMAGE_EXTS = (".jpg", ".jpeg", ".png")
 
-def predict_single_image(image_path):
-    print(f"\n[Machine Learning] Analyzing: {image_path}")
-    
+
+def predict_image(image_path, model, scaler):
+    """Classify one raw image and save the image with its lesion mask."""
     img = cv2.imread(image_path)
     if img is None:
-        print(f"Error: Image not found at {image_path}")
+        print(f"Cannot read {image_path}")
         return
 
-    # Same steps as prepare_data.py + ext.py: FOV mask, DullRazor, resize, features
-    resized_img = cv2.resize(advanced_preprocess(img), (IMG_SIZE, IMG_SIZE))
-    mask = segment_lesion(resized_img)
-    features = extract_features(resized_img).reshape(1, -1)
+    img = cv2.resize(advanced_preprocess(img), (IMG_SIZE, IMG_SIZE))
+    mask = segment_lesion(img)
+    features = scaler.transform(extract_features(img).reshape(1, -1))
 
-    try:
-        model = joblib.load('./model/melanoma_model.pkl')
-        scaler = joblib.load('./model/feature_scaler.pkl')
-    except FileNotFoundError:
-        print("Error: Model files not found. Please run train.py first.")
-        return
+    probs = model.predict_proba(features)[0]
+    pred = int(probs.argmax())
+    label = CATEGORIES[pred]
+    print(f"{os.path.basename(image_path)}: {label} ({probs[pred] * 100:.2f}%)")
 
-    features_scaled = scaler.transform(features)
-    prediction = model.predict(features_scaled)[0]
-    
-    probabilities = model.predict_proba(features_scaled)[0]
-    confidence = probabilities[prediction] * 100
-    predicted_label = CATEGORIES[prediction]
-    
-    print(f"XGBoost Result: {predicted_label} (Confidence: {confidence:.2f}%)")
-
-    img_rgb = cv2.cvtColor(resized_img, cv2.COLOR_BGR2RGB)
     plt.figure(figsize=(10, 5))
-    
     plt.subplot(1, 2, 1)
-    plt.title(f"Preprocessed (FOV + DullRazor)\nDiag: {predicted_label}")
-    plt.imshow(img_rgb)
-    plt.axis('off')
-    
+    plt.title(f"Preprocessed (FOV + DullRazor)\nDiag: {label}")
+    plt.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+    plt.axis("off")
     plt.subplot(1, 2, 2)
     plt.title("Region of Interest Mask")
-    plt.imshow(mask, cmap='gray')
-    plt.axis('off')
-    
-    os.makedirs("./result", exist_ok=True)
-    base_name = os.path.splitext(os.path.basename(image_path))[0]
-    output_path = f"./result/xgb_pred_{base_name}.png"
-    
+    plt.imshow(mask, cmap="gray")
+    plt.axis("off")
     plt.tight_layout()
-    plt.savefig(output_path)
+
+    name = os.path.splitext(os.path.basename(image_path))[0]
+    plt.savefig(os.path.join(RESULT_DIR, f"xgb_pred_{name}.png"))
     plt.close()
-    print(f"Prediction saved to '{output_path}'")
+
+
+def main():
+    if not os.path.exists(MODEL_PATH):
+        print("Model not found. Run train.py first.")
+        return
+    model = joblib.load(MODEL_PATH)
+    scaler = joblib.load(SCALER_PATH)
+
+    files = [f for f in os.listdir(TEST_DIR) if f.lower().endswith(IMAGE_EXTS)] if os.path.exists(TEST_DIR) else []
+    if not files:
+        print(f"No images found in {TEST_DIR}")
+        return
+
+    os.makedirs(RESULT_DIR, exist_ok=True)
+    for file_name in files:
+        predict_image(os.path.join(TEST_DIR, file_name), model, scaler)
+    print(f"\nFigures saved to {RESULT_DIR}")
+
 
 if __name__ == "__main__":
-    test_dir = "./test"
-    
-    if not os.path.exists(test_dir):
-        print(f"Please create '{test_dir}' folder and add test images.")
-    else:
-        extensions = [".jpg", ".jpeg", ".png"]
-        found = False
-        for filename in os.listdir(test_dir):
-            if any(filename.lower().endswith(ext) for ext in extensions):
-                target_path = os.path.join(test_dir, filename)
-                predict_single_image(target_path)
-                found = True
-                
-        if not found:
-            print(f"No images found in '{test_dir}'.")
+    main()
