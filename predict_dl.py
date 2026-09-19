@@ -1,11 +1,13 @@
 import os
 import cv2
-import numpy as np
 import torch
 import torch.nn as nn
 from torchvision import models, transforms
 from PIL import Image
 import matplotlib.pyplot as plt
+
+# Reuse the training-time preprocessing (FOV mask + DullRazor + 256x256 resize)
+from prepare_data import advanced_preprocess
 
 # System configuration
 MODEL_PATH = "./model/resnet18_melanoma.pth"
@@ -16,34 +18,6 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 plt.rcParams['font.sans-serif'] = ['Microsoft JhengHei'] 
 plt.rcParams['axes.unicode_minus'] = False
 
-def preprocess_for_inference(image):
-    """
-    Apply FOV masking and DullRazor to match training data distribution.
-    Crucial for preventing Training-Serving Skew.
-    """
-    # 1. FOV Masking
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    _, thresh = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY_INV)
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
-    thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
-    
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    masked_img = image.copy()
-    if contours:
-        c = max(contours, key=cv2.contourArea)
-        mask = np.zeros_like(gray)
-        cv2.drawContours(mask, [c], -1, 255, thickness=cv2.FILLED)
-        masked_img = cv2.bitwise_and(image, image, mask=mask)
-        
-    # 2. DullRazor Hair Removal
-    gray_masked = cv2.cvtColor(masked_img, cv2.COLOR_BGR2GRAY)
-    kernel_cross = cv2.getStructuringElement(cv2.MORPH_CROSS, (17, 17))
-    blackhat = cv2.morphologyEx(gray_masked, cv2.MORPH_BLACKHAT, kernel_cross)
-    _, hair_mask = cv2.threshold(blackhat, 15, 255, cv2.THRESH_BINARY)
-    
-    cleaned_img = cv2.inpaint(masked_img, hair_mask, inpaintRadius=3, flags=cv2.INPAINT_TELEA)
-    return cleaned_img
-
 def predict_single_image_dl(image_path, model, transform):
     """Run model inference on a single image and save the result."""
     print(f"[INFO] Analyzing: {os.path.basename(image_path)}")
@@ -52,7 +26,7 @@ def predict_single_image_dl(image_path, model, transform):
     cv_img = cv2.imread(image_path)
     if cv_img is None:
         return
-    cleaned_cv_img = preprocess_for_inference(cv_img)
+    cleaned_cv_img = advanced_preprocess(cv_img)
     
     # Convert OpenCV (BGR) to PIL (RGB) for PyTorch transforms
     cleaned_rgb = cv2.cvtColor(cleaned_cv_img, cv2.COLOR_BGR2RGB)
@@ -70,6 +44,7 @@ def predict_single_image_dl(image_path, model, transform):
         
     predicted_label = CATEGORIES[predicted_idx.item()]
     conf_score = confidence.item() * 100
+    print(f"       ResNet18 Result: {predicted_label} (Confidence: {conf_score:.2f}%)")
     
     # Visualization
     plt.figure(figsize=(6, 6))

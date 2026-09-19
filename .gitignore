@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+
+# Kaggle images (download) and generated split (prepare_data.py)
+train/
+dataset/
+
+# Per-image prediction figures
+result/xgb_pred_*.png
+result/dl_pred_*.png
+result/preprocessing_demo*.png

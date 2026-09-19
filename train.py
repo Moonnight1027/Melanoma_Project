@@ -1,11 +1,12 @@
 import os
 import joblib
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import GridSearchCV
-from sklearn.metrics import accuracy_score, confusion_matrix, classification_report, roc_curve, auc
+from sklearn.model_selection import GridSearchCV, StratifiedGroupKFold
+from sklearn.metrics import roc_auc_score, accuracy_score, confusion_matrix, classification_report, roc_curve, auc
 import xgboost as xgb
 import shap
 
@@ -23,6 +24,10 @@ FEATURE_NAMES = [
     "Shape: Aspect_Ratio", "Shape: Extent", "Shape: Solidity"
 ]
 
+def auc_scorer(estimator, X, y):
+    """ROC AUC from predict_proba (scoring='roc_auc' does not recognize older XGBoost as a classifier)."""
+    return roc_auc_score(y, estimator.predict_proba(X)[:, 1])
+
 def main():
     print("\n[INFO] Initializing Machine Learning Pipeline (XGBoost + SHAP)...")
     
@@ -36,11 +41,18 @@ def main():
     
     print(f"       -> Distribution: Train={len(y_train)}, Val={len(y_val)}, Test={len(y_test)}")
 
+    # XGBoost is tuned with cross-validation, so the separate val split (used by the
+    # CNN for checkpointing) is merged into the training data here.
+    X_fit = np.concatenate([X_train, X_val])
+    y_fit = np.concatenate([y_train, y_val])
+    ids_fit = np.concatenate([np.load('./data/ids_train.npy'), np.load('./data/ids_val.npy')])
+    patient_of = pd.read_csv('./train.csv', usecols=['image_name', 'patient_id']).set_index('image_name')['patient_id']
+    groups_fit = patient_of.loc[ids_fit].to_numpy()
+
     # Standardize features (mean=0, variance=1)
     # Crucial for models to treat all features (e.g., Hue vs Area) on an equal scale
     scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train)
-    X_val_scaled = scaler.transform(X_val)
+    X_fit_scaled = scaler.fit_transform(X_fit)
     X_test_scaled = scaler.transform(X_test)
 
     # ==========================================
@@ -57,12 +69,13 @@ def main():
     # Initialize base XGBoost classifier
     base_xgb = xgb.XGBClassifier(eval_metric='logloss', random_state=42)
     
-    # 5-Fold Cross Validation
-    grid_search = GridSearchCV(estimator=base_xgb, param_grid=param_grid, cv=5, n_jobs=-1, verbose=1)
-    grid_search.fit(X_train_scaled, y_train)
+    # 5-Fold Cross Validation, grouped by patient so no patient is in both the fit and score folds
+    cv = StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=42)
+    grid_search = GridSearchCV(estimator=base_xgb, param_grid=param_grid, cv=cv, scoring=auc_scorer, error_score='raise', n_jobs=-1, verbose=1)
+    grid_search.fit(X_fit_scaled, y_fit, groups=groups_fit)
     
     best_xgb = grid_search.best_estimator_
-    print(f"[SUCCESS] Best Parameters Found: {grid_search.best_params_}")
+    print(f"[SUCCESS] Best Parameters Found: {grid_search.best_params_} (CV AUC {grid_search.best_score_:.4f})")
 
     # ==========================================
     # 4. Final Evaluation (Test Set Metrics)

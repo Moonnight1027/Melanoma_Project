@@ -1,5 +1,6 @@
 import os
 import copy
+import random
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -18,12 +19,19 @@ BATCH_SIZE = 32
 EPOCHS = 15
 LEARNING_RATE = 0.001
 NUM_CLASSES = 2
+SEED = 42
 
 def main():
     """
     Train and evaluate a ResNet18 model for melanoma classification.
     Implements Data Augmentation, Transfer Learning, and Dynamic LR.
     """
+    # Fix the random seeds so repeated runs give comparable results
+    random.seed(SEED)
+    np.random.seed(SEED)
+    torch.manual_seed(SEED)
+    torch.cuda.manual_seed_all(SEED)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"\n[INFO] Initializing Deep Learning Pipeline on: {device.type.upper()}")
 

@@ -73,9 +73,12 @@ def extract_features(image):
     ])
     
     # --- Feature Set 2: Texture (GLCM) ---
+    # Shift lesion gray levels to 1..256 and leave 0 for "outside the lesion", then drop
+    # every pair that touches level 0 so the background does not dominate the GLCM.
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    roi_gray = cv2.bitwise_and(gray, gray, mask=mask)
-    glcm = graycomatrix(roi_gray, distances=[1], angles=[0], levels=256, symmetric=True, normed=True)
+    roi_gray = np.where(mask == 255, gray.astype(np.uint16) + 1, 0).astype(np.uint16)
+    glcm = graycomatrix(roi_gray, distances=[1], angles=[0], levels=257, symmetric=True)
+    glcm = glcm[1:, 1:].astype(np.float64)  # graycoprops normalizes the counts itself
     features.extend([
         graycoprops(glcm, 'contrast')[0, 0], 
         graycoprops(glcm, 'dissimilarity')[0, 0],
@@ -112,7 +115,7 @@ def main():
     
     for split in SPLITS:
         print(f"\n[INFO] Extracting features for '{split}' set...")
-        X, y = [], []
+        X, y, ids = [], [], []
         split_dir = os.path.join(DATASET_DIR, split)
         
         for label_idx, category in enumerate(CATEGORIES):
@@ -129,10 +132,12 @@ def main():
                 if img is not None:
                     X.append(extract_features(img))
                     y.append(label_idx)
+                    ids.append(os.path.splitext(file_name)[0])
 
         # Save extracted features as NumPy arrays
         np.save(f'./data/X_{split}.npy', np.array(X))
         np.save(f'./data/y_{split}.npy', np.array(y))
+        np.save(f'./data/ids_{split}.npy', np.array(ids))  # image names, used by train.py for patient-grouped CV
         
     print("\n[SUCCESS] Feature extraction completed.")
     

@@ -1,15 +1,20 @@
 import os
+import shutil
 import cv2
 import numpy as np
 import pandas as pd
 from sklearn.utils import resample
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import StratifiedGroupKFold
 from tqdm import tqdm
 
 # System configuration
 CSV_PATH = "./train.csv"
 IMG_SOURCE_DIR = "./train/"
 DATASET_DIR = "./dataset"
+# 20 patient-grouped folds: 3 for test (15%), 3 for val (15%), 14 for train (70%)
+N_FOLDS = 20
+TEST_FOLDS = [0, 1, 2]
+VAL_FOLDS = [3, 4, 5]
 
 def mask_circular_fov(image):
     """
@@ -78,18 +83,26 @@ def main():
     df_balanced = pd.concat([df_benign_down, df_malignant])
     print(f"[INFO] Balanced dataset size: {len(df_balanced)} images.")
     
-    # --- 2. Physical Data Splitting (Stratified 70/15/15) ---
-    df_train, df_temp = train_test_split(
-        df_balanced, test_size=0.3, random_state=42, stratify=df_balanced['target']
-    )
-    df_val, df_test = train_test_split(
-        df_temp, test_size=0.5, random_state=42, stratify=df_temp['target']
-    )
-    
+    # --- 2. Physical Data Splitting (Stratified 70/15/15, grouped by patient) ---
+    # A patient's lesions share skin tone and imaging conditions, so all images of
+    # one patient must stay in the same split to avoid leakage into val/test.
+    df_balanced = df_balanced.reset_index(drop=True)
+    sgkf = StratifiedGroupKFold(n_splits=N_FOLDS, shuffle=True, random_state=42)
+    fold = np.empty(len(df_balanced), dtype=int)
+    for k, (_, idx) in enumerate(sgkf.split(df_balanced, df_balanced['target'], groups=df_balanced['patient_id'])):
+        fold[idx] = k
+    df_test = df_balanced[np.isin(fold, TEST_FOLDS)]
+    df_val = df_balanced[np.isin(fold, VAL_FOLDS)]
+    df_train = df_balanced[~np.isin(fold, TEST_FOLDS + VAL_FOLDS)]
+
     splits = {'train': df_train, 'val': df_val, 'test': df_test}
     categories = {0: "benign", 1: "malignant"}
     
     # --- 3. Execute Pre-processing and Disk I/O ---
+    # Start from an empty dataset/ so images from a previous split cannot linger
+    if os.path.exists(DATASET_DIR):
+        shutil.rmtree(DATASET_DIR)
+
     for split_name, df_split in splits.items():
         print(f"\n[INFO] Generating '{split_name}' set ({len(df_split)} images)...")
         

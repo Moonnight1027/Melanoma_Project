@@ -1,0 +1,14 @@
+opencv-python
+numpy
+pandas
+scikit-image
+scikit-learn>=1.1
+xgboost
+shap
+matplotlib
+seaborn
+tqdm
+torch
+torchvision
+pillow
+joblib
