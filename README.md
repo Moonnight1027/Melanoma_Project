@@ -1,6 +1,8 @@
 # Melanoma Skin Cancer Classification: Traditional CV vs. Deep Learning
 
 ## 📌 Project Overview
+![Pipeline](docs/pipeline.png)
+
 This project classifies dermoscopic skin lesion images as **Benign** or **Malignant** and compares two approaches:
 1. **Traditional Machine Learning (ML):** OpenCV lesion segmentation (Otsu on valid skin pixels only, morphology, largest contour) followed by 14 handcrafted features (6 HSV color, 5 GLCM texture, 3 shape). An **XGBoost** classifier, tuned with patient-grouped 5-fold `GridSearchCV`, is trained on the standardized features, and **SHAP** explains each feature's contribution.
 2. **Deep Learning (DL):** PyTorch transfer learning with an ImageNet-pretrained **ResNet18**, random flips / ±20° rotation, Adam, `ReduceLROnPlateau` and best-validation checkpointing.
@@ -20,6 +22,7 @@ Melanoma_Project/
 ├── result/                   # Confusion matrix, ROC curves, SHAP summary (prediction figures are also written here)
 ├── test/                     # Raw images from the test split for predict.py / predict_dl.py
 ├── sample_images/            # Example images for visualize_preprocess.py
+├── docs/                     # Pipeline diagram
 │
 ├── prepare_data.py           # 1:1 under-sampling, FOV masking, DullRazor, patient-grouped 70/15/15 split
 ├── ext.py                    # Lesion segmentation + 14-dim feature extraction
