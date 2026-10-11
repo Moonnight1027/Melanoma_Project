@@ -1,6 +1,6 @@
 # Melanoma Skin Cancer Classification: Traditional CV vs. Deep Learning
 
-## 📌 Project Overview
+## Project Overview
 ![Pipeline](docs/pipeline.png)
 
 This project classifies dermoscopic skin lesion images as **Benign** or **Malignant** and compares two approaches:
@@ -11,7 +11,7 @@ Both pipelines use the same cleaned dataset (FOV masking + DullRazor hair remova
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 ```text
 Melanoma_Project/
 │
@@ -40,7 +40,7 @@ Melanoma_Project/
 
 ---
 
-## 🛠️ Setup & Installation
+## Setup & Installation
 1. Download the **SIIM-ISIC Melanoma 256x256** dataset from Kaggle:
    https://www.kaggle.com/datasets/cdeotte/jpeg-melanoma-256x256
 2. Place the `train/` folder and `train.csv` in the project root.
@@ -53,7 +53,7 @@ The trained models in `model/` are included, so `predict.py` and `predict_dl.py`
 
 ---
 
-## 🚀 Execution Workflow
+## Execution Workflow
 
 ### Step 1: Data Preparation
 The original dataset has 33,126 images and is about 98% benign. `prepare_data.py` under-samples the benign class to a 1:1 ratio (1,168 images), splits it into Train/Val/Test (814 / 177 / 177) and cleans every image:
@@ -96,7 +96,7 @@ python predict_dl.py    # saves ./result/dl_pred_<image>.png
 
 ---
 
-## 📊 Results (patient-grouped test set, 177 images, threshold 0.5)
+## Results (patient-grouped test set, 177 images, threshold 0.5)
 | Model | Test Accuracy | AUC |
 |---|---|---|
 | XGBoost (14 handcrafted features) | 77.40% | 0.8620 |
